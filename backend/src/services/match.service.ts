@@ -9,6 +9,7 @@ import { AppError } from '../middleware/errorHandler';
 
 /**
  * Create a match proposal (one user proposes to collaborate on a project).
+ * Fetches real user + project data and sends to AI for scoring.
  */
 export async function createMatch(
   projectId: string,
@@ -33,12 +34,27 @@ export async function createMatch(
   });
   if (existing) throw new AppError('A match proposal already exists.', 409);
 
-  // Optionally get AI match score
+  // Get AI match score using real data
   let matchScore: number | null = null;
   try {
-    matchScore = await getAIMatchScore(projectId, proposerId);
+    const proposer = await prisma.user.findUnique({
+      where: { id: proposerId },
+      include: { skills: { include: { skill: true } } },
+    });
+
+    if (proposer) {
+      const userSkills = proposer.skills.map((us: any) => us.skill.name);
+      const requiredSkills = (project.requiredSkills as any[] || []).map((s: any) => s.name || s);
+
+      matchScore = await getAIMatchScore({
+        projectDescription: project.description,
+        projectRequiredSkills: requiredSkills,
+        userBio: proposer.bio || '',
+        userSkills,
+      });
+    }
   } catch (err) {
-    console.warn('[Match] AI scoring unavailable, proceeding without score.');
+    console.warn('[Match] AI scoring failed, proceeding without score:', err);
   }
 
   return prisma.match.create({
@@ -104,29 +120,85 @@ export async function getUserMatches(userId: string, status?: string) {
 
 /**
  * Get AI-generated match recommendations for a project.
- * Calls the Python AI microservice for scoring.
+ * Fetches the project data + all users with relevant skills,
+ * then sends them to the AI service for ranking.
  */
 export async function getProjectRecommendations(projectId: string) {
   try {
+    const project = await prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) return { recommendations: [], source: 'error' };
+
+    const requiredSkills = (project.requiredSkills as any[] || []).map((s: any) => s.name || s);
+
+    // Find users who have at least one of the required skills
+    const candidates = await prisma.user.findMany({
+      where: {
+        id: { not: project.creatorId }, // Exclude project creator
+      },
+      include: {
+        skills: { include: { skill: true } },
+      },
+      take: 50,
+    });
+
+    const candidateProfiles = candidates.map((u: any) => ({
+      user_id: u.id,
+      name: u.name,
+      bio: u.bio || '',
+      skills: u.skills.map((us: any) => us.skill.name),
+      specialty: u.specialty,
+      city: u.city,
+      avg_rating: u.avgRating,
+    }));
+
     const response = await axios.post(`${config.aiServiceUrl}/match/recommend`, {
       project_id: projectId,
+      project_description: project.description,
+      project_required_skills: requiredSkills,
+      candidate_profiles: candidateProfiles,
     });
+
     return response.data;
   } catch (err) {
-    console.warn('[Match] AI recommendation service unavailable.');
-    // Fallback: return basic skill-matching results
+    console.warn('[Match] AI recommendation service unavailable:', err);
     return { recommendations: [], source: 'fallback' };
   }
 }
 
 /**
- * Internal: Request AI match score between a user and a project.
+ * Analyze text (bio, project description) using the AI service.
+ * Returns extracted keywords and categories.
  */
-async function getAIMatchScore(projectId: string, userId: string): Promise<number | null> {
+export async function analyzeText(text: string) {
+  try {
+    const response = await axios.post(`${config.aiServiceUrl}/analyze-text`, {
+      text,
+      max_keywords: 10,
+    });
+    return response.data;
+  } catch (err) {
+    console.warn('[AI] Text analysis unavailable:', err);
+    return null;
+  }
+}
+
+/**
+ * Request AI match score using actual user and project data.
+ */
+async function getAIMatchScore(data: {
+  projectDescription: string;
+  projectRequiredSkills: string[];
+  userBio: string;
+  userSkills: string[];
+}): Promise<number | null> {
   try {
     const response = await axios.post(`${config.aiServiceUrl}/match/score`, {
-      project_id: projectId,
-      user_id: userId,
+      project_id: 'scoring',
+      user_id: 'scoring',
+      project_description: data.projectDescription,
+      project_required_skills: data.projectRequiredSkills,
+      user_bio: data.userBio,
+      user_skills: data.userSkills,
     });
     return response.data.score ?? null;
   } catch {
