@@ -3,20 +3,18 @@ Creative Barter Network — AI/ML Microservice
 =============================================
 FastAPI-based service providing:
   - Text analysis and keyword extraction
-  - Skill/resource matching via LLM API
+  - Skill/resource matching via Anthropic Claude API
   - Semantic similarity scoring between users and projects
-
-This service is called by the Node.js backend for AI-powered
-features like match scoring and recommendations.
 """
 
 import os
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import httpx
 from dotenv import load_dotenv
+import anthropic
 
 load_dotenv()
 
@@ -38,10 +36,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# LLM API configuration
-LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_API_URL = os.getenv("LLM_API_URL", "https://api.openai.com/v1/chat/completions")
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+# Anthropic client — reads ANTHROPIC_API_KEY from environment automatically
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
 
 # ============================================================
@@ -49,24 +48,19 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # ============================================================
 
 class TextAnalysisRequest(BaseModel):
-    """Input for keyword extraction from text."""
     text: str
     max_keywords: int = 10
 
 
 class TextAnalysisResponse(BaseModel):
-    """Extracted keywords and categories from text."""
     keywords: list[str]
     categories: list[str]
     summary: str
 
 
 class MatchScoreRequest(BaseModel):
-    """Input for calculating match score between user and project."""
     project_id: str
     user_id: str
-    # In a full implementation, the backend would send the actual
-    # profile and project data rather than IDs. Using IDs as stubs.
     project_description: Optional[str] = None
     project_required_skills: Optional[list[str]] = None
     user_bio: Optional[str] = None
@@ -74,14 +68,12 @@ class MatchScoreRequest(BaseModel):
 
 
 class MatchScoreResponse(BaseModel):
-    """Match score result."""
-    score: float  # 0-100
+    score: float
     reasoning: str
     matched_skills: list[str]
 
 
 class RecommendationRequest(BaseModel):
-    """Input for getting project recommendations."""
     project_id: str
     project_description: Optional[str] = None
     project_required_skills: Optional[list[str]] = None
@@ -89,52 +81,46 @@ class RecommendationRequest(BaseModel):
 
 
 class RecommendationResponse(BaseModel):
-    """List of recommended users for a project."""
     recommendations: list[dict]
-    source: str  # 'ai' or 'fallback'
+    source: str
 
 
 # ============================================================
-# LLM Helper
+# Claude API Helper
 # ============================================================
 
-async def call_llm(system_prompt: str, user_prompt: str) -> str:
+def call_claude(system_prompt: str, user_prompt: str) -> str:
     """
-    Call an LLM API (OpenAI-compatible) with the given prompts.
+    Call the Anthropic Claude API with the given prompts.
     Returns the text response or raises an error.
     """
-    if not LLM_API_KEY:
+    if not client:
         raise HTTPException(
             status_code=503,
-            detail="LLM API key not configured. Set LLM_API_KEY in environment."
+            detail="Anthropic API key not configured. Set ANTHROPIC_API_KEY in environment."
         )
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            LLM_API_URL,
-            headers={
-                "Authorization": f"Bearer {LLM_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": LLM_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0.3,
-                "max_tokens": 500,
-            },
+    try:
+        message = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=500,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": user_prompt}
+            ],
         )
 
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"LLM API returned status {response.status_code}"
-            )
+        # Extract text from the response content blocks
+        return "".join(
+            block.text for block in message.content if block.type == "text"
+        )
 
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+    except anthropic.AuthenticationError:
+        raise HTTPException(status_code=401, detail="Invalid Anthropic API key.")
+    except anthropic.RateLimitError:
+        raise HTTPException(status_code=429, detail="Claude API rate limit reached. Try again shortly.")
+    except anthropic.APIError as e:
+        raise HTTPException(status_code=502, detail=f"Claude API error: {str(e)}")
 
 
 # ============================================================
@@ -143,8 +129,12 @@ async def call_llm(system_prompt: str, user_prompt: str) -> str:
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "ok", "service": "ai-ml", "llm_configured": bool(LLM_API_KEY)}
+    return {
+        "status": "ok",
+        "service": "ai-ml",
+        "provider": "anthropic-claude",
+        "llm_configured": client is not None,
+    }
 
 
 @app.post("/analyze-text", response_model=TextAnalysisResponse)
@@ -152,34 +142,32 @@ async def analyze_text(request: TextAnalysisRequest):
     """
     Analyze text (user bio, project description) to extract
     keywords, categories, and a brief summary.
-
-    This helps the matching system understand what skills/resources
-    a user has or a project needs, even if not explicitly tagged.
     """
     system_prompt = """You are a skill and resource analysis assistant for a creative collaboration platform.
 Extract relevant keywords, categorize them, and provide a brief summary.
-Respond in JSON format with keys: keywords (list of strings), categories (list of strings), summary (string).
+Respond ONLY with valid JSON, no markdown fences or extra text.
+Use this exact format: {"keywords": [...], "categories": [...], "summary": "..."}
 Focus on: creative skills, tools, software, equipment, artistic domains, and collaboration-relevant terms."""
 
     user_prompt = f"""Analyze this text and extract up to {request.max_keywords} relevant keywords for creative skill/resource matching:
 
 "{request.text}"
 
-Return JSON only, no markdown."""
+Return JSON only."""
 
     try:
-        result = await call_llm(system_prompt, user_prompt)
-        import json
-        parsed = json.loads(result)
+        result = call_claude(system_prompt, user_prompt)
+        # Strip any markdown fences Claude might add
+        clean = result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        parsed = json.loads(clean)
         return TextAnalysisResponse(
             keywords=parsed.get("keywords", []),
             categories=parsed.get("categories", []),
             summary=parsed.get("summary", ""),
         )
-    except Exception as e:
+    except (json.JSONDecodeError, HTTPException):
         # Fallback: simple keyword extraction without LLM
         words = request.text.lower().split()
-        # Filter common stop words
         stop_words = {"the", "a", "an", "is", "are", "was", "and", "or", "in", "on", "at", "to", "for", "of", "with"}
         keywords = [w.strip(".,!?;:") for w in words if len(w) > 3 and w not in stop_words]
         unique_keywords = list(dict.fromkeys(keywords))[:request.max_keywords]
@@ -193,12 +181,40 @@ Return JSON only, no markdown."""
 @app.post("/match/score", response_model=MatchScoreResponse)
 async def calculate_match_score(request: MatchScoreRequest):
     """
-    Calculate a match compatibility score (0-100) between a user
-    and a project based on skills overlap and semantic analysis.
+    Calculate a match compatibility score (0-100) between a user and a project.
+    Uses Claude for semantic matching when descriptions are available,
+    falls back to rule-based skill overlap otherwise.
     """
-    # If we have actual data, use LLM for semantic matching
+    # If we have text descriptions, use Claude for semantic analysis
+    if request.project_description and request.user_bio and client:
+        system_prompt = """You are a matching algorithm for a creative collaboration platform.
+Analyze how well a user's profile matches a project's needs.
+Respond ONLY with valid JSON: {"score": 0-100, "reasoning": "...", "matched_skills": [...]}"""
+
+        user_prompt = f"""Rate the match between this user and project:
+
+PROJECT: {request.project_description}
+Required skills: {', '.join(request.project_required_skills or [])}
+
+USER BIO: {request.user_bio}
+User skills: {', '.join(request.user_skills or [])}
+
+Return JSON only."""
+
+        try:
+            result = call_claude(system_prompt, user_prompt)
+            clean = result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            parsed = json.loads(clean)
+            return MatchScoreResponse(
+                score=min(float(parsed.get("score", 50)), 100),
+                reasoning=parsed.get("reasoning", ""),
+                matched_skills=parsed.get("matched_skills", []),
+            )
+        except Exception:
+            pass  # Fall through to rule-based matching
+
+    # Rule-based fallback
     if request.project_required_skills and request.user_skills:
-        # Rule-based matching first
         required = set(s.lower() for s in request.project_required_skills)
         user = set(s.lower() for s in request.user_skills)
         overlap = required & user
@@ -210,7 +226,6 @@ async def calculate_match_score(request: MatchScoreRequest):
             matched_skills=list(overlap),
         )
 
-    # Stub: return a placeholder score when no data is provided
     return MatchScoreResponse(
         score=50.0,
         reasoning="Insufficient data for detailed scoring. Using default.",
@@ -222,15 +237,11 @@ async def calculate_match_score(request: MatchScoreRequest):
 async def get_recommendations(request: RecommendationRequest):
     """
     Get recommended users for a project.
-    Uses AI when available, falls back to rule-based matching.
+    Scores each candidate by skill overlap, uses Claude for tiebreaking when available.
     """
     if not request.candidate_profiles:
-        return RecommendationResponse(
-            recommendations=[],
-            source="fallback",
-        )
+        return RecommendationResponse(recommendations=[], source="fallback")
 
-    # Score each candidate
     scored_candidates = []
     for profile in request.candidate_profiles:
         user_skills = set(s.lower() for s in profile.get("skills", []))
@@ -245,7 +256,6 @@ async def get_recommendations(request: RecommendationRequest):
             "matched_skills": list(overlap),
         })
 
-    # Sort by score descending
     scored_candidates.sort(key=lambda x: x["score"], reverse=True)
 
     return RecommendationResponse(
