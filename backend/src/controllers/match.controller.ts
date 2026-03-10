@@ -35,3 +35,16 @@ export async function getRecommendations(req: AuthRequest, res: Response, next: 
     res.json(result);
   } catch (error) { next(error); }
 }
+
+/** POST /api/matches/analyze - Analyze text with AI to extract skills/keywords */
+export async function analyzeText(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { text } = req.body;
+    if (!text) {
+      res.status(400).json({ error: 'Text is required.' });
+      return;
+    }
+    const result = await matchService.analyzeText(text);
+    res.json(result || { keywords: [], categories: [], summary: '' });
+  } catch (error) { next(error); }
+}
