@@ -2,10 +2,13 @@
 
 import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
+import Link from 'next/link';
+import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 
 export default function PublicProfilePage() {
   const { id } = useParams();
+  const { user } = useAuth();
   const [profile, setProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -51,6 +54,15 @@ export default function PublicProfilePage() {
         </div>
         {profile.bio && (
           <p className="mt-4 text-surface-800 leading-relaxed">{profile.bio}</p>
+        )}
+        {/* Message button — don't show on your own profile */}
+        {user && user.id !== id && (
+          <Link
+            href={`/messages?user=${profile.id}&name=${encodeURIComponent(profile.name)}`}
+            className="mt-4 inline-block bg-brand-500 text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:bg-brand-600 transition-colors"
+          >
+            💬 Send Message
+          </Link>
         )}
       </div>
 
