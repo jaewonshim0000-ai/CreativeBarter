@@ -66,6 +66,7 @@ export default function MatchesPage() {
           {matches.map((match) => {
             const isProposer = match.proposerId === user?.id;
             const otherUser = isProposer ? match.receiver : match.proposer;
+            const otherUserId = isProposer ? match.receiverId : match.proposerId;
 
             return (
               <div
@@ -139,7 +140,7 @@ export default function MatchesPage() {
                 {/* Chat link for accepted matches */}
                 {match.status === 'accepted' && (
                   <Link
-                    href="/messages"
+                    href={`/messages?user=${otherUserId}&name=${encodeURIComponent(otherUser?.name || 'User')}`}
                     className="mt-4 inline-block text-sm text-brand-600 hover:underline font-medium"
                   >
                     💬 Open Chat
