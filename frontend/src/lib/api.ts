@@ -139,6 +139,10 @@ class ApiClient {
     return this.request<any>('GET', `/api/matches/recommendations/${projectId}`);
   }
 
+  async analyzeText(text: string) {
+    return this.request<any>('POST', '/api/matches/analyze', { text });
+  }
+
   // ===================== Messages =====================
 
   async getConversations() {
