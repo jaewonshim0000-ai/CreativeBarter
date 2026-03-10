@@ -1,0 +1,225 @@
+// Prisma Schema for Creative Barter Network
+// Connection config lives in prisma.config.ts (Prisma 7+)
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [uuidOssp(map: "uuid-ossp"), postgis]
+}
+
+// ============================================================
+// User Model
+// ============================================================
+
+model User {
+  id              String   @id @default(uuid())
+  email           String   @unique
+  passwordHash    String   @map("password_hash")
+  name            String
+  profileImageUrl String?  @map("profile_image_url")
+  bio             String?
+  specialty       String   @default("other")
+  city            String?
+  region          String?
+  latitude        Float?
+  longitude       Float?
+  role            String   @default("user")
+  portfolio       Json     @default("[]")
+  avgRating       Float    @default(0) @map("avg_rating")
+  totalReviews    Int      @default(0) @map("total_reviews")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  skills           UserSkill[]
+  resources        UserResource[]
+  projects         Project[]
+  proposedMatches  Match[]        @relation("proposer")
+  receivedMatches  Match[]        @relation("receiver")
+  sentMessages     Message[]      @relation("sender")
+  receivedMessages Message[]      @relation("receiver_msg")
+  givenReviews     Review[]       @relation("reviewer")
+  receivedReviews  Review[]       @relation("reviewed")
+  notifications    Notification[]
+
+  @@map("users")
+}
+
+// ============================================================
+// Skill Model
+// ============================================================
+
+model Skill {
+  id          String      @id @default(uuid())
+  name        String      @unique
+  description String?
+  category    String?
+  createdAt   DateTime    @default(now()) @map("created_at")
+  users       UserSkill[]
+
+  @@map("skills")
+}
+
+model UserSkill {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  skillId         String   @map("skill_id")
+  proficiency     String   @default("beginner")
+  yearsExperience Int      @default(0) @map("years_experience")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skill Skill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, skillId])
+  @@map("user_skills")
+}
+
+// ============================================================
+// Resource Model
+// ============================================================
+
+model Resource {
+  id           String         @id @default(uuid())
+  name         String         @unique
+  description  String?
+  resourceType String?        @map("resource_type")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  users        UserResource[]
+
+  @@map("resources")
+}
+
+model UserResource {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  resourceId   String   @map("resource_id")
+  details      String?
+  availability String   @default("available")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, resourceId])
+  @@map("user_resources")
+}
+
+// ============================================================
+// Project Model
+// ============================================================
+
+model Project {
+  id                String   @id @default(uuid())
+  creatorId         String   @map("creator_id")
+  title             String
+  description       String
+  requiredSkills    Json     @default("[]") @map("required_skills")
+  requiredResources Json     @default("[]") @map("required_resources")
+  offeredSkills     Json     @default("[]") @map("offered_skills")
+  offeredResources  Json     @default("[]") @map("offered_resources")
+  status            String   @default("open")
+  latitude          Float?
+  longitude         Float?
+  city              String?
+  region            String?
+  deadline          DateTime?
+  maxCollaborators  Int      @default(5) @map("max_collaborators")
+  tags              Json     @default("[]")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  creator  User      @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  matches  Match[]
+  messages Message[]
+  reviews  Review[]
+
+  @@map("projects")
+}
+
+// ============================================================
+// Match Model
+// ============================================================
+
+model Match {
+  id         String   @id @default(uuid())
+  projectId  String   @map("project_id")
+  proposerId String   @map("proposer_id")
+  receiverId String   @map("receiver_id")
+  status     String   @default("pending")
+  message    String?
+  matchScore Float?   @map("match_score")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  project  Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  proposer User    @relation("proposer", fields: [proposerId], references: [id], onDelete: Cascade)
+  receiver User    @relation("receiver", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, proposerId, receiverId])
+  @@map("matches")
+}
+
+// ============================================================
+// Message Model
+// ============================================================
+
+model Message {
+  id         String   @id @default(uuid())
+  senderId   String   @map("sender_id")
+  receiverId String   @map("receiver_id")
+  projectId  String?  @map("project_id")
+  content    String
+  isRead     Boolean  @default(false) @map("is_read")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  sender   User     @relation("sender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver User     @relation("receiver_msg", fields: [receiverId], references: [id], onDelete: Cascade)
+  project  Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@map("messages")
+}
+
+// ============================================================
+// Review Model
+// ============================================================
+
+model Review {
+  id             String   @id @default(uuid())
+  reviewerId     String   @map("reviewer_id")
+  reviewedUserId String   @map("reviewed_user_id")
+  projectId      String   @map("project_id")
+  rating         Int
+  content        String?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  reviewer     User    @relation("reviewer", fields: [reviewerId], references: [id], onDelete: Cascade)
+  reviewedUser User    @relation("reviewed", fields: [reviewedUserId], references: [id], onDelete: Cascade)
+  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewerId, reviewedUserId, projectId])
+  @@map("reviews")
+}
+
+// ============================================================
+// Notification Model
+// ============================================================
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  type      String
+  title     String
+  body      String?
+  data      Json     @default("{}")
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
