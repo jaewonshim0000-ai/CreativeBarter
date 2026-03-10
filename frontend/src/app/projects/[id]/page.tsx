@@ -14,6 +14,10 @@ export default function ProjectDetailPage() {
   const [loading, setLoading] = useState(true);
   const [proposalMessage, setProposalMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [recommendations, setRecommendations] = useState<any[]>([]);
+  const [recsLoading, setRecsLoading] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState<any>(null);
+  const [analyzing, setAnalyzing] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -142,6 +146,134 @@ export default function ProjectDetailPage() {
           >
             {sending ? 'Sending...' : 'Send Proposal'}
           </button>
+        </div>
+      )}
+
+      {/* AI Analysis (owner only) */}
+      {isOwner && (
+        <div className="bg-white rounded-2xl p-6 border border-surface-200">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-semibold">🤖 AI Analysis</h2>
+            <button
+              onClick={async () => {
+                if (!project) return;
+                setAnalyzing(true);
+                try {
+                  const result = await api.analyzeText(project.description);
+                  setAiAnalysis(result);
+                } catch (err) {
+                  console.error('AI analysis failed:', err);
+                } finally {
+                  setAnalyzing(false);
+                }
+              }}
+              disabled={analyzing}
+              className="text-sm bg-brand-50 text-brand-600 px-4 py-1.5 rounded-lg hover:bg-brand-100 transition-colors disabled:opacity-50"
+            >
+              {analyzing ? 'Analyzing...' : aiAnalysis ? 'Re-analyze' : 'Analyze Project'}
+            </button>
+          </div>
+          {aiAnalysis ? (
+            <div className="space-y-3">
+              <div>
+                <p className="text-xs font-medium text-surface-800 mb-1">Extracted Keywords</p>
+                <div className="flex flex-wrap gap-1">
+                  {(aiAnalysis.keywords || []).map((kw: string, i: number) => (
+                    <span key={i} className="text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full">
+                      {kw}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-surface-800 mb-1">Categories</p>
+                <div className="flex flex-wrap gap-1">
+                  {(aiAnalysis.categories || []).map((cat: string, i: number) => (
+                    <span key={i} className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">
+                      {cat}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              {aiAnalysis.summary && (
+                <div>
+                  <p className="text-xs font-medium text-surface-800 mb-1">AI Summary</p>
+                  <p className="text-sm text-surface-800">{aiAnalysis.summary}</p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-surface-800">
+              Click "Analyze Project" to let AI extract keywords and suggest relevant skill categories from your project description.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* AI Recommended Collaborators (owner only) */}
+      {isOwner && (
+        <div className="bg-white rounded-2xl p-6 border border-surface-200">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-semibold">🤖 Recommended Collaborators</h2>
+            <button
+              onClick={async () => {
+                if (!project) return;
+                setRecsLoading(true);
+                try {
+                  const result = await api.getRecommendations(project.id);
+                  setRecommendations(result.recommendations || []);
+                } catch (err) {
+                  console.error('Failed to load recommendations:', err);
+                } finally {
+                  setRecsLoading(false);
+                }
+              }}
+              disabled={recsLoading}
+              className="text-sm bg-brand-50 text-brand-600 px-4 py-1.5 rounded-lg hover:bg-brand-100 transition-colors disabled:opacity-50"
+            >
+              {recsLoading ? 'Finding...' : recommendations.length > 0 ? 'Refresh' : 'Find Collaborators'}
+            </button>
+          </div>
+          {recsLoading ? (
+            <div className="text-center py-4">
+              <div className="w-6 h-6 border-3 border-brand-500 border-t-transparent rounded-full animate-spin mx-auto" />
+              <p className="text-sm text-surface-800 mt-2">AI is analyzing potential matches...</p>
+            </div>
+          ) : recommendations.length > 0 ? (
+            <div className="space-y-3">
+              {recommendations.map((rec: any, i: number) => (
+                <div key={i} className="flex items-center justify-between p-3 bg-surface-50 rounded-xl">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-brand-100 rounded-full flex items-center justify-center text-brand-600 font-medium">
+                      {rec.name?.charAt(0) || '?'}
+                    </div>
+                    <div>
+                      <Link href={`/profile/${rec.user_id}`} className="font-medium text-sm hover:text-brand-600 transition-colors">
+                        {rec.name}
+                      </Link>
+                      {rec.matched_skills && rec.matched_skills.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {rec.matched_skills.map((skill: string, j: number) => (
+                            <span key={j} className="text-[10px] bg-green-50 text-green-600 px-1.5 py-0.5 rounded-full">
+                              {skill}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-lg font-bold text-brand-500">{Math.round(rec.score)}%</span>
+                    <p className="text-[10px] text-surface-800">match</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-surface-800">
+              Click "Find Collaborators" to let AI match your project with the best available creatives.
+            </p>
+          )}
         </div>
       )}
     </div>
