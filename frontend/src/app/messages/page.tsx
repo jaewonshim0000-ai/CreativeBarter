@@ -1,35 +1,135 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Suspense } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { useSocket } from '@/hooks/useSocket';
+import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import type { Conversation, Message } from '@/types';
 
+/**
+ * Combined contact: either from an existing conversation or an accepted match.
+ * This lets users message accepted matches even before any messages are sent.
+ */
+interface Contact {
+  partnerId: string;
+  partnerName: string;
+  lastMessage?: string;
+  lastMessageAt?: string;
+}
+
+// Wrapper to provide Suspense boundary for useSearchParams
 export default function MessagesPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center min-h-[40vh]">
+        <div className="w-8 h-8 border-4 border-brand-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    }>
+      <MessagesContent />
+    </Suspense>
+  );
+}
+
+function MessagesContent() {
   const { user, token } = useAuth();
   const { socket } = useSocket(token);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const searchParams = useSearchParams();
+
+  const [contacts, setContacts] = useState<Contact[]>([]);
   const [selectedPartner, setSelectedPartner] = useState<string | null>(null);
+  const [selectedPartnerName, setSelectedPartnerName] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Load conversations list
+  // Load contacts: merge existing conversations + accepted matches
   useEffect(() => {
-    api.getConversations()
-      .then(setConversations)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+    async function loadContacts() {
+      try {
+        const [conversations, matches] = await Promise.all([
+          api.getConversations().catch(() => []),
+          api.getMatches('accepted').catch(() => []),
+        ]);
 
-  // Load messages when selecting a conversation
+        const contactMap = new Map<string, Contact>();
+
+        // Add contacts from existing conversations
+        (conversations || []).forEach((conv: Conversation) => {
+          contactMap.set(conv.partnerId, {
+            partnerId: conv.partnerId,
+            partnerName: conv.partner.name || 'Unknown',
+            lastMessage: conv.lastMessage?.content,
+            lastMessageAt: conv.lastMessage?.createdAt,
+          });
+        });
+
+        // Add contacts from accepted matches (even if no messages yet)
+        (matches || []).forEach((match: any) => {
+          const isProposer = match.proposerId === user?.id;
+          const partnerId = isProposer ? match.receiverId : match.proposerId;
+          const partnerName = isProposer
+            ? match.receiver?.name
+            : match.proposer?.name;
+
+          if (!contactMap.has(partnerId)) {
+            contactMap.set(partnerId, {
+              partnerId,
+              partnerName: partnerName || 'Unknown',
+              lastMessage: undefined,
+              lastMessageAt: match.createdAt,
+            });
+          }
+        });
+
+        // Sort: contacts with recent messages first, then matches
+        const sorted = Array.from(contactMap.values()).sort((a, b) => {
+          if (a.lastMessage && !b.lastMessage) return -1;
+          if (!a.lastMessage && b.lastMessage) return 1;
+          const dateA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+          const dateB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+          return dateB - dateA;
+        });
+
+        setContacts(sorted);
+      } catch (err) {
+        console.error('Failed to load contacts:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    if (user) loadContacts();
+  }, [user]);
+
+  // Auto-select partner from URL params (?user=ID&name=Name)
+  useEffect(() => {
+    const userId = searchParams.get('user');
+    const userName = searchParams.get('name');
+
+    if (userId) {
+      setSelectedPartner(userId);
+      setSelectedPartnerName(userName || 'User');
+
+      // Add to contacts list if not already there
+      setContacts((prev) => {
+        if (prev.some((c) => c.partnerId === userId)) return prev;
+        return [
+          { partnerId: userId, partnerName: userName || 'User' },
+          ...prev,
+        ];
+      });
+    }
+  }, [searchParams]);
+
+  // Load messages when selecting a partner
   useEffect(() => {
     if (selectedPartner) {
       api.getConversation(selectedPartner)
         .then((data) => setMessages(data.messages || []))
-        .catch(console.error);
+        .catch(() => setMessages([])); // Empty is fine for new conversations
     }
   }, [selectedPartner]);
 
@@ -37,14 +137,30 @@ export default function MessagesPage() {
   useEffect(() => {
     if (!socket) return;
 
-    socket.on('message:receive', (message: Message) => {
+    const handleReceive = (message: Message) => {
       if (message.senderId === selectedPartner) {
         setMessages((prev) => [...prev, message]);
       }
-    });
+      // Update last message in contacts list
+      setContacts((prev) =>
+        prev.map((c) =>
+          c.partnerId === message.senderId
+            ? { ...c, lastMessage: message.content, lastMessageAt: message.createdAt }
+            : c
+        )
+      );
+    };
+
+    const handleSent = (message: Message) => {
+      // Confirmation from server — we already added optimistically
+    };
+
+    socket.on('message:receive', handleReceive);
+    socket.on('message:sent', handleSent);
 
     return () => {
-      socket.off('message:receive');
+      socket.off('message:receive', handleReceive);
+      socket.off('message:sent', handleSent);
     };
   }, [socket, selectedPartner]);
 
@@ -53,91 +169,121 @@ export default function MessagesPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSend = async () => {
-    if (!newMessage.trim() || !selectedPartner) return;
-
-    try {
-      // Use socket for real-time delivery
-      if (socket) {
-        socket.emit('message:send', {
-          receiverId: selectedPartner,
-          content: newMessage,
-        });
-      } else {
-        await api.sendMessage(selectedPartner, newMessage);
-      }
-
-      // Optimistic UI update
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
-          senderId: user!.id,
-          receiverId: selectedPartner,
-          content: newMessage,
-          isRead: false,
-          createdAt: new Date().toISOString(),
-        },
-      ]);
-      setNewMessage('');
-    } catch (err) {
-      console.error('Failed to send message:', err);
-    }
+  // Select a contact
+  const selectContact = (contact: Contact) => {
+    setSelectedPartner(contact.partnerId);
+    setSelectedPartnerName(contact.partnerName);
   };
 
-  const selectedConversation = conversations.find((c) => c.partnerId === selectedPartner);
+  // Send a message
+  const handleSend = async () => {
+    if (!newMessage.trim() || !selectedPartner || sending) return;
+    setSending(true);
+
+    const messageContent = newMessage;
+    setNewMessage('');
+
+    // Optimistic UI update
+    const optimisticMsg: Message = {
+      id: `temp-${Date.now()}`,
+      senderId: user!.id,
+      receiverId: selectedPartner,
+      content: messageContent,
+      isRead: false,
+      createdAt: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, optimisticMsg]);
+
+    // Update contacts list with new last message
+    setContacts((prev) =>
+      prev.map((c) =>
+        c.partnerId === selectedPartner
+          ? { ...c, lastMessage: messageContent, lastMessageAt: optimisticMsg.createdAt }
+          : c
+      )
+    );
+
+    try {
+      if (socket?.connected) {
+        socket.emit('message:send', {
+          receiverId: selectedPartner,
+          content: messageContent,
+        });
+      } else {
+        await api.sendMessage(selectedPartner, messageContent);
+      }
+    } catch (err) {
+      console.error('Failed to send message:', err);
+      // Remove optimistic message on failure
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticMsg.id));
+    } finally {
+      setSending(false);
+    }
+  };
 
   return (
     <div className="h-[calc(100vh-8rem)]">
       <h1 className="font-display text-3xl mb-6">Messages</h1>
 
       <div className="flex bg-white rounded-2xl border border-surface-200 overflow-hidden h-[calc(100%-4rem)]">
-        {/* Conversation List */}
-        <div className="w-80 border-r border-surface-200 overflow-y-auto">
+        {/* Contact List (left sidebar) */}
+        <div className="w-80 border-r border-surface-200 overflow-y-auto flex flex-col">
+          <div className="p-3 border-b border-surface-200">
+            <p className="text-xs font-medium text-surface-800 uppercase tracking-wide">Conversations</p>
+          </div>
+
           {loading ? (
             <div className="p-4 text-center text-sm text-surface-800">Loading...</div>
-          ) : conversations.length === 0 ? (
+          ) : contacts.length === 0 ? (
             <div className="p-6 text-center text-sm text-surface-800">
-              No conversations yet. Propose a collaboration to start chatting!
+              No conversations yet. Accept a match to start chatting!
             </div>
           ) : (
-            conversations.map((conv) => (
-              <button
-                key={conv.partnerId}
-                onClick={() => setSelectedPartner(conv.partnerId)}
-                className={`w-full text-left p-4 border-b border-surface-100 hover:bg-surface-50 transition-colors ${
-                  selectedPartner === conv.partnerId ? 'bg-brand-50' : ''
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-brand-100 rounded-full flex items-center justify-center text-brand-600 font-medium shrink-0">
-                    {conv.partner.name?.charAt(0) || '?'}
+            <div className="flex-1 overflow-y-auto">
+              {contacts.map((contact) => (
+                <button
+                  key={contact.partnerId}
+                  onClick={() => selectContact(contact)}
+                  className={`w-full text-left p-4 border-b border-surface-100 hover:bg-surface-50 transition-colors ${
+                    selectedPartner === contact.partnerId ? 'bg-brand-50' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-brand-100 rounded-full flex items-center justify-center text-brand-600 font-medium shrink-0">
+                      {contact.partnerName.charAt(0) || '?'}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-medium text-sm truncate">{contact.partnerName}</p>
+                      <p className="text-xs text-surface-800 truncate">
+                        {contact.lastMessage || 'No messages yet — say hello!'}
+                      </p>
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <p className="font-medium text-sm truncate">{conv.partner.name}</p>
-                    <p className="text-xs text-surface-800 truncate">
-                      {conv.lastMessage.content}
-                    </p>
-                  </div>
-                </div>
-              </button>
-            ))
+                </button>
+              ))}
+            </div>
           )}
         </div>
 
-        {/* Chat Area */}
+        {/* Chat Area (right side) */}
         <div className="flex-1 flex flex-col">
           {selectedPartner ? (
             <>
               {/* Chat Header */}
-              <div className="p-4 border-b border-surface-200">
-                <p className="font-semibold">
-                  {selectedConversation?.partner.name || 'Chat'}
-                </p>
+              <div className="p-4 border-b border-surface-200 flex items-center gap-3">
+                <div className="w-8 h-8 bg-brand-100 rounded-full flex items-center justify-center text-brand-600 font-medium text-sm">
+                  {selectedPartnerName.charAt(0) || '?'}
+                </div>
+                <p className="font-semibold">{selectedPartnerName}</p>
               </div>
 
               {/* Messages */}
               <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                {messages.length === 0 && (
+                  <div className="text-center py-12">
+                    <p className="text-surface-800 text-sm">No messages yet. Send the first one!</p>
+                  </div>
+                )}
                 {messages.map((msg) => {
                   const isMine = msg.senderId === user?.id;
                   return (
@@ -160,20 +306,21 @@ export default function MessagesPage() {
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Input */}
+              {/* Message Input */}
               <div className="p-4 border-t border-surface-200">
                 <div className="flex gap-2">
                   <input
                     type="text"
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
                     placeholder="Type a message..."
                     className="flex-1 px-4 py-2.5 border border-surface-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500"
                   />
                   <button
                     onClick={handleSend}
-                    className="bg-brand-500 text-white px-5 py-2.5 rounded-xl font-medium hover:bg-brand-600 transition-colors"
+                    disabled={sending || !newMessage.trim()}
+                    className="bg-brand-500 text-white px-5 py-2.5 rounded-xl font-medium hover:bg-brand-600 transition-colors disabled:opacity-50"
                   >
                     Send
                   </button>
@@ -181,8 +328,11 @@ export default function MessagesPage() {
               </div>
             </>
           ) : (
-            <div className="flex-1 flex items-center justify-center text-surface-800 text-sm">
-              Select a conversation to start messaging
+            <div className="flex-1 flex items-center justify-center">
+              <div className="text-center">
+                <p className="text-surface-800 text-lg mb-1">Select a conversation</p>
+                <p className="text-surface-800 text-sm">Choose someone from the left to start messaging</p>
+              </div>
             </div>
           )}
         </div>
