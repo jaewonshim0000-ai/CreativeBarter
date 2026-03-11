@@ -143,6 +143,10 @@ class ApiClient {
     return this.request<any>('POST', '/api/matches/analyze', { text });
   }
 
+  async analyzePortfolio(urls: string[], bio: string, existingSkills: string[] = []) {
+    return this.request<any>('POST', '/api/matches/analyze-portfolio', { urls, bio, existingSkills });
+  }
+
   // ===================== Messages =====================
 
   async getConversations() {
