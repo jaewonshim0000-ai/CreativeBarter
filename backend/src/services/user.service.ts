@@ -98,6 +98,66 @@ export async function removeUserSkill(userId: string, skillId: string) {
 }
 
 /**
+ * Bulk save skills from AI portfolio analysis.
+ * Creates skills that don't exist, then links them to the user.
+ * Skips duplicates. Maps proficiency 1-10 to enum values.
+ */
+export async function bulkSaveSkills(
+  userId: string,
+  skills: { name: string; proficiency_estimate: number; category: string }[]
+) {
+  const results = [];
+
+  for (const skill of skills) {
+    try {
+      // Find or create the skill in the master skills table
+      let dbSkill = await prisma.skill.findUnique({ where: { name: skill.name } });
+
+      if (!dbSkill) {
+        dbSkill = await prisma.skill.create({
+          data: {
+            name: skill.name,
+            category: skill.category,
+            description: `Auto-detected by AI portfolio analysis`,
+          },
+        });
+      }
+
+      // Map 1-10 to proficiency enum
+      let proficiency = 'beginner';
+      if (skill.proficiency_estimate >= 7) proficiency = 'advanced';
+      else if (skill.proficiency_estimate >= 4) proficiency = 'intermediate';
+      if (skill.proficiency_estimate >= 9) proficiency = 'expert';
+
+      // Create user-skill link (skip if already exists)
+      const existing = await prisma.userSkill.findUnique({
+        where: { userId_skillId: { userId, skillId: dbSkill.id } },
+      });
+
+      if (!existing) {
+        const userSkill = await prisma.userSkill.create({
+          data: {
+            userId,
+            skillId: dbSkill.id,
+            proficiency,
+            yearsExperience: Math.max(0, Math.floor(skill.proficiency_estimate / 2)),
+          },
+          include: { skill: true },
+        });
+        results.push({ ...userSkill, status: 'created' });
+      } else {
+        results.push({ id: existing.id, skill: dbSkill, proficiency, status: 'already_exists' });
+      }
+    } catch (err) {
+      console.warn(`[Skills] Failed to save skill "${skill.name}":`, err);
+      results.push({ name: skill.name, status: 'failed' });
+    }
+  }
+
+  return results;
+}
+
+/**
  * Add a resource to user's profile.
  */
 export async function addUserResource(
