@@ -168,6 +168,10 @@ export default function ProfilePage() {
       <PortfolioAnalyzer
         bio={form.bio}
         existingSkills={profile?.skills?.map((us: any) => us.skill.name) || []}
+        onSkillsSaved={() => {
+          // Reload profile to show newly saved skills
+          api.getMyProfile().then((data) => setProfile(data)).catch(console.error);
+        }}
       />
 
       {/* Reviews Section */}
@@ -202,11 +206,18 @@ export default function ProfilePage() {
 // Portfolio Analyzer Component
 // ============================================================
 
-function PortfolioAnalyzer({ bio, existingSkills }: { bio: string; existingSkills: string[] }) {
+function PortfolioAnalyzer({ bio, existingSkills, onSkillsSaved }: {
+  bio: string;
+  existingSkills: string[];
+  onSkillsSaved?: () => void;
+}) {
   const [urls, setUrls] = useState<string[]>(['']);
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<PortfolioAnalysisResponse | null>(null);
   const [error, setError] = useState('');
+  const [selectedSkills, setSelectedSkills] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState<{ saved: number; skipped: number; failed: number } | null>(null);
 
   const addUrlField = () => {
     if (urls.length < 5) setUrls([...urls, '']);
@@ -240,10 +251,55 @@ function PortfolioAnalyzer({ bio, existingSkills }: { bio: string; existingSkill
     try {
       const data = await api.analyzePortfolio(validUrls, bio, existingSkills);
       setResult(data);
+      setSaveResult(null);
+      // Auto-select all detected skills
+      setSelectedSkills(new Set(data.top_skills.map((s: PortfolioSkill) => s.name)));
     } catch (err: any) {
       setError(err.message || 'Portfolio analysis failed. Please try again.');
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  const toggleSkill = (name: string) => {
+    setSelectedSkills((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (!result) return;
+    if (selectedSkills.size === result.top_skills.length) {
+      setSelectedSkills(new Set());
+    } else {
+      setSelectedSkills(new Set(result.top_skills.map((s) => s.name)));
+    }
+  };
+
+  const handleSaveSkills = async () => {
+    if (!result || selectedSkills.size === 0) return;
+    setSaving(true);
+    setSaveResult(null);
+
+    const skillsToSave = result.top_skills
+      .filter((s) => selectedSkills.has(s.name))
+      .map((s) => ({
+        name: s.name,
+        proficiency_estimate: s.proficiency_estimate,
+        category: s.category,
+      }));
+
+    try {
+      const data = await api.bulkSaveSkills(skillsToSave);
+      setSaveResult({ saved: data.saved, skipped: data.skipped, failed: data.failed });
+      if (onSkillsSaved) onSkillsSaved(); // Refresh parent profile
+    } catch (err: any) {
+      setError(err.message || 'Failed to save skills.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -336,20 +392,42 @@ function PortfolioAnalyzer({ bio, existingSkills }: { bio: string; existingSkill
           {/* Detected Skills */}
           {result.top_skills.length > 0 && (
             <div>
-              <h3 className="text-sm font-semibold mb-2">
-                Detected Skills ({result.top_skills.length})
-              </h3>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold">
+                  Detected Skills ({selectedSkills.size}/{result.top_skills.length} selected)
+                </h3>
+                <button
+                  onClick={toggleAll}
+                  className="text-xs text-brand-600 hover:text-brand-700 font-medium"
+                >
+                  {selectedSkills.size === result.top_skills.length ? 'Deselect all' : 'Select all'}
+                </button>
+              </div>
               <div className="space-y-2">
                 {result.top_skills.map((skill: PortfolioSkill, i: number) => (
-                  <div key={i} className="flex items-center justify-between p-2 bg-surface-50 rounded-lg">
+                  <div
+                    key={i}
+                    onClick={() => toggleSkill(skill.name)}
+                    className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-colors ${
+                      selectedSkills.has(skill.name)
+                        ? 'bg-brand-50 border border-brand-200'
+                        : 'bg-surface-50 border border-transparent hover:bg-surface-100'
+                    }`}
+                  >
                     <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedSkills.has(skill.name)}
+                        onChange={() => toggleSkill(skill.name)}
+                        className="w-4 h-4 rounded border-surface-300 text-brand-500 focus:ring-brand-500"
+                        onClick={(e) => e.stopPropagation()}
+                      />
                       <span className="font-medium text-sm">{skill.name}</span>
                       <span className="text-[10px] bg-surface-200 text-surface-800 px-1.5 py-0.5 rounded">
                         {skill.category}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
-                      {/* Proficiency bar */}
                       <div className="flex gap-0.5">
                         {Array.from({ length: 10 }, (_, j) => (
                           <div
@@ -366,6 +444,29 @@ function PortfolioAnalyzer({ bio, existingSkills }: { bio: string; existingSkill
                     </div>
                   </div>
                 ))}
+              </div>
+
+              {/* Save button */}
+              <div className="mt-4 flex items-center gap-3">
+                <button
+                  onClick={handleSaveSkills}
+                  disabled={saving || selectedSkills.size === 0}
+                  className="bg-green-500 text-white px-5 py-2 rounded-xl text-sm font-medium hover:bg-green-600 transition-colors disabled:opacity-50"
+                >
+                  {saving ? (
+                    <span className="flex items-center gap-2">
+                      <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Saving...
+                    </span>
+                  ) : `Save ${selectedSkills.size} skill${selectedSkills.size !== 1 ? 's' : ''} to profile`}
+                </button>
+                {saveResult && (
+                  <span className="text-sm text-surface-800">
+                    ✅ {saveResult.saved} saved
+                    {saveResult.skipped > 0 && `, ${saveResult.skipped} already existed`}
+                    {saveResult.failed > 0 && <span className="text-red-500">, {saveResult.failed} failed</span>}
+                  </span>
+                )}
               </div>
             </div>
           )}
