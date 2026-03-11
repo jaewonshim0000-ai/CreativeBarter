@@ -141,3 +141,29 @@ export interface AuthResponse {
   user: Pick<User, 'id' | 'email' | 'name' | 'role'>;
   token: string;
 }
+
+// ============================================================
+// Portfolio Analysis Types
+// ============================================================
+
+export interface PortfolioSkill {
+  name: string;
+  proficiency_estimate: number; // 1-10
+  category: string; // "software" | "artistic_skill" | "tool" | "language" | "technique" | "domain"
+}
+
+export interface PortfolioAnalysisRequest {
+  urls: string[];
+  bio: string;
+  existingSkills: string[];
+}
+
+export interface PortfolioAnalysisResponse {
+  top_skills: PortfolioSkill[];
+  suggested_categories: string[];
+  tools_detected: string[];
+  artistic_styles: string[];
+  summary: string;
+  urls_analyzed: string[];
+  urls_failed: string[];
+}
