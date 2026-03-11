@@ -95,6 +95,10 @@ class ApiClient {
     return this.request<any>('POST', '/api/users/me/skills', { skillId, proficiency, yearsExperience });
   }
 
+  async bulkSaveSkills(skills: { name: string; proficiency_estimate: number; category: string }[]) {
+    return this.request<any>('POST', '/api/users/me/skills/bulk', { skills });
+  }
+
   async removeSkill(skillId: string) {
     return this.request<any>('DELETE', `/api/users/me/skills/${skillId}`);
   }
