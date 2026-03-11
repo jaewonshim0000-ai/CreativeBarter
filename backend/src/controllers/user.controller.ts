@@ -43,6 +43,24 @@ export async function removeSkill(req: AuthRequest, res: Response, next: NextFun
   } catch (error) { next(error); }
 }
 
+/** POST /api/users/me/skills/bulk - Save multiple skills from AI portfolio analysis */
+export async function bulkSaveSkills(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { skills } = req.body;
+    if (!skills || !Array.isArray(skills) || skills.length === 0) {
+      res.status(400).json({ error: 'Provide an array of skills.' });
+      return;
+    }
+    const results = await userService.bulkSaveSkills(req.userId!, skills);
+    res.status(201).json({
+      saved: results.filter((r: any) => r.status === 'created').length,
+      skipped: results.filter((r: any) => r.status === 'already_exists').length,
+      failed: results.filter((r: any) => r.status === 'failed').length,
+      details: results,
+    });
+  } catch (error) { next(error); }
+}
+
 /** POST /api/users/me/resources */
 export async function addResource(req: AuthRequest, res: Response, next: NextFunction) {
   try {
