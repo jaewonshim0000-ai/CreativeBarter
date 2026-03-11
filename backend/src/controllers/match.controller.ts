@@ -48,3 +48,16 @@ export async function analyzeText(req: AuthRequest, res: Response, next: NextFun
     res.json(result || { keywords: [], categories: [], summary: '' });
   } catch (error) { next(error); }
 }
+
+/** POST /api/matches/analyze-portfolio - Extract skills from portfolio URLs + bio */
+export async function analyzePortfolio(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { urls, bio, existingSkills } = req.body;
+    if (!urls?.length && !bio) {
+      res.status(400).json({ error: 'Provide at least one URL or a bio.' });
+      return;
+    }
+    const result = await matchService.analyzePortfolio(urls || [], bio || '', existingSkills || []);
+    res.json(result);
+  } catch (error) { next(error); }
+}
