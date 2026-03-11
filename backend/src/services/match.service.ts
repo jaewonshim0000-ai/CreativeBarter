@@ -183,6 +183,35 @@ export async function analyzeText(text: string) {
 }
 
 /**
+ * Analyze portfolio URLs and bio to extract skills, tools, and styles.
+ * Calls the AI service's /analyze-portfolio endpoint.
+ */
+export async function analyzePortfolio(urls: string[], bio: string, existingSkills: string[]) {
+  try {
+    const response = await axios.post(`${config.aiServiceUrl}/analyze-portfolio`, {
+      urls,
+      bio,
+      existing_skills: existingSkills,
+    }, {
+      timeout: 30000, // 30s timeout — URL fetching + AI can be slow
+    });
+    return response.data;
+  } catch (err: any) {
+    console.warn('[AI] Portfolio analysis failed:', err?.message);
+    // Return a structured error response instead of null
+    return {
+      top_skills: [],
+      suggested_categories: [],
+      tools_detected: [],
+      artistic_styles: [],
+      summary: 'Portfolio analysis is currently unavailable. Please try again later.',
+      urls_analyzed: [],
+      urls_failed: urls,
+    };
+  }
+}
+
+/**
  * Request AI match score using actual user and project data.
  */
 async function getAIMatchScore(data: {
